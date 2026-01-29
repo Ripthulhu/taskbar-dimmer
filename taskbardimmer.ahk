@@ -12,7 +12,7 @@ maxBrowserWindows        := 6
 youtubeTitleRegex        := "i)\byoutube\b"
 
 ; FOLLOW MODE
-followMode               := false			 ; Start in follow mode
+followMode               := false            ; Start in follow mode
 followHotkey             := "^!f"            ; Ctrl+Alt+F toggles follow mode
 followModeBehavior       := "multi-primary"  ; "multi-primary" or "single-anywhere"
 
@@ -278,7 +278,14 @@ RunFollowMultiPrimary(primaryMon) {
         }
 
         w := wins[i]
-        topH := followTopOverlayH  ; <-- ALWAYS 81 in follow mode
+        topH := followTopOverlayH  ; ALWAYS 81 in follow mode
+
+        ; === hide overlays if covered ===
+        if (IsRectCoveredByOtherWindow(w.hwnd, w.x, w.y, w.w, topH)) {
+            EnsureShown(TopHwnds[i], false)
+            EnsureShown(YtHwnds[i], false)
+            continue
+        }
 
         TopGuis[i].Move(w.x, w.y, w.w, topH)
         EnsureShown(TopHwnds[i], true)
@@ -290,9 +297,15 @@ RunFollowMultiPrimary(primaryMon) {
             ytW := w.w - (ytInsetLeft + ytInsetRight)
             if (ytW < 1)
                 ytW := 1
-            YtGuis[i].Move(ytX, ytY, ytW, ytOverlayH)
-            EnsureShown(YtHwnds[i], true)
-            PinTop(YtHwnds[i])
+
+            ; === hide YT overlay if its region is covered ===
+            if (IsRectCoveredByOtherWindow(w.hwnd, ytX, ytY, ytW, ytOverlayH)) {
+                EnsureShown(YtHwnds[i], false)
+            } else {
+                YtGuis[i].Move(ytX, ytY, ytW, ytOverlayH)
+                EnsureShown(YtHwnds[i], true)
+                PinTop(YtHwnds[i])
+            }
         } else {
             EnsureShown(YtHwnds[i], false)
         }
@@ -366,7 +379,14 @@ RunFollowSingle() {
 
     GetBestBounds(TrackedBrowserHwnd, &x, &y, &w, &h)
 
-    topH := followTopOverlayH  ; <-- ALWAYS 81 in follow mode
+    topH := followTopOverlayH  ; ALWAYS 81 in follow mode
+
+    ; === hide overlays if covered ===
+    if (IsRectCoveredByOtherWindow(TrackedBrowserHwnd, x, y, w, topH)) {
+        EnsureShown(TopHwnds[1], false)
+        EnsureShown(YtHwnds[1], false)
+        return
+    }
 
     TopGuis[1].Move(x, y, w, topH)
     EnsureShown(TopHwnds[1], true)
@@ -378,9 +398,15 @@ RunFollowSingle() {
         ytW := w - (ytInsetLeft + ytInsetRight)
         if (ytW < 1)
             ytW := 1
-        YtGuis[1].Move(ytX, ytY, ytW, ytOverlayH)
-        EnsureShown(YtHwnds[1], true)
-        PinTop(YtHwnds[1])
+
+        ; === hide YT overlay if its region is covered ===
+        if (IsRectCoveredByOtherWindow(TrackedBrowserHwnd, ytX, ytY, ytW, ytOverlayH)) {
+            EnsureShown(YtHwnds[1], false)
+        } else {
+            YtGuis[1].Move(ytX, ytY, ytW, ytOverlayH)
+            EnsureShown(YtHwnds[1], true)
+            PinTop(YtHwnds[1])
+        }
     } else {
         EnsureShown(YtHwnds[1], false)
     }
@@ -449,6 +475,13 @@ RunNormalSnapMax(primaryMon, waT, waB) {
         w := wins[i]
         topH := (w.mode = "snap") ? topOverlayHSnap : topOverlayHMax
 
+        ; === hide overlays if covered ===
+        if (IsRectCoveredByOtherWindow(w.hwnd, w.x, w.y, w.w, topH)) {
+            EnsureShown(TopHwnds[i], false)
+            EnsureShown(YtHwnds[i], false)
+            continue
+        }
+
         TopGuis[i].Move(w.x, w.y, w.w, topH)
         EnsureShown(TopHwnds[i], true)
         PinTop(TopHwnds[i])
@@ -459,9 +492,15 @@ RunNormalSnapMax(primaryMon, waT, waB) {
             ytW := w.w - (ytInsetLeft + ytInsetRight)
             if (ytW < 1)
                 ytW := 1
-            YtGuis[i].Move(ytX, ytY, ytW, ytOverlayH)
-            EnsureShown(YtHwnds[i], true)
-            PinTop(YtHwnds[i])
+
+            ; === hide YT overlay if its region is covered ===
+            if (IsRectCoveredByOtherWindow(w.hwnd, ytX, ytY, ytW, ytOverlayH)) {
+                EnsureShown(YtHwnds[i], false)
+            } else {
+                YtGuis[i].Move(ytX, ytY, ytW, ytOverlayH)
+                EnsureShown(YtHwnds[i], true)
+                PinTop(YtHwnds[i])
+            }
         } else {
             EnsureShown(YtHwnds[i], false)
         }
@@ -527,6 +566,83 @@ FindFullscreenOnPrimary(L, T, R, B) {
     }
     return 0
 }
+
+; ===================== COVER CHECK ======================
+; Returns true if the rectangle is FULLY covered by some other (non-ignored) window above the target.
+IsRectCoveredByOtherWindow(targetHwnd, rx, ry, rw, rh) {
+    cols := 3
+    rows := 3
+    if (rw <= 1 || rh <= 1)
+        return true
+
+    Loop rows {
+        py := Integer(ry + (A_Index - 0.5) * (rh / rows))
+        Loop cols {
+            px := Integer(rx + (A_Index - 0.5) * (rw / cols))
+            ; If ANY sample point is not covered, the rect is not fully covered.
+            if (!IsPointCoveredByOtherWindow(targetHwnd, px, py))
+                return false
+        }
+    }
+    return true
+}
+
+IsPointCoveredByOtherWindow(targetHwnd, px, py) {
+    global OverlayHwndSet, IgnoreProcs, IgnoreClasses
+
+    hwnd := DllCall("User32\GetTopWindow", "Ptr", 0, "Ptr")
+    GW_HWNDNEXT := 2
+    GA_ROOT := 2
+
+    seen := Map()
+
+    Loop 512 {
+        if (!hwnd)
+            break
+
+        root := DllCall("User32\GetAncestor", "Ptr", hwnd, "UInt", GA_ROOT, "Ptr")
+        if (!root)
+            root := hwnd
+
+        if (!seen.Has(root)) {
+            seen[root] := true
+
+            ; skip our overlays
+            if (!OverlayHwndSet.Has(root)) {
+
+                cls := TryGetClass(root)
+                if (cls != "" && cls != "Progman" && cls != "WorkerW" && cls != "Shell_TrayWnd" && cls != "Shell_SecondaryTrayWnd") {
+
+                    if (!IgnoreClasses.Has(cls)) {
+
+                        proc := TryGetProc(root)
+                        if (!(proc != "" && IgnoreProcs.Has(proc))) {
+
+                            if (TryIsVisible(root) && !IsWindowCloaked(root) && !TryIsMinimized(root)) {
+
+                                GetBestBounds(root, &x, &y, &w, &h)
+                                if (w > 0 && h > 0 && px >= x && px < x + w && py >= y && py < y + h) {
+                                    ; first eligible window that contains the point decides
+                                    if (root = targetHwnd)
+                                        return false  ; not covered
+                                    else
+                                        return true   ; covered by another window
+                                }
+
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        hwnd := DllCall("User32\GetWindow", "Ptr", hwnd, "UInt", GW_HWNDNEXT, "Ptr")
+    }
+
+    ; fallback: assume NOT covered to avoid false hiding
+    return false
+}
+; ===========================================================
 
 EnsureShown(hwnd, show) {
     global OverlayShown
